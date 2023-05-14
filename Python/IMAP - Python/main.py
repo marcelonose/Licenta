@@ -20,7 +20,6 @@ def clean(text):
 imap = imaplib.IMAP4_SSL(imap_server)
 # authenticate
 imap.login(username, password)
-
 status, messages = imap.select("Sent")
 # number of top emails to fetch
 N = 1

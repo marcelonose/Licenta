@@ -6,7 +6,7 @@ import os
 
 # account credentials
 username = 'onosemarcel'
-password = '.........' #app password
+password = '' #app password
 # use your email provider's IMAP server, you can look for your provider's IMAP server on Google
 # or check this page: https://www.systoolsgroup.com/imap/
 # for office 365, it's this:
@@ -20,6 +20,7 @@ def clean(text):
 imap = imaplib.IMAP4_SSL(imap_server)
 # authenticate
 imap.login(username, password)
+
 status, messages = imap.select("Sent")
 # number of top emails to fetch
 N = 1
