@@ -13,8 +13,11 @@ try:
 except ImportError:
     HAVE_SSL = False
 
+__all__ = ["IMAP4", "IMAP4_stream", "Internaldate2tuple",
+           "Int2AP", "ParseFlags", "Time2Internaldate"]
 
-#		Globals
+
+#		Globals 
 CRLF = b'\r\n'
 Debug = 0
 IMAP4_PORT = 143
@@ -82,15 +85,17 @@ Commands = {
 
 #       Patterns to match server responses
 
-Continuation = re.compile(br'\+( (?P<data>.*))?')
-Flags = re.compile(br'.*FLAGS \((?P<flags>[^\)]*)\)')
-InternalDate = re.compile(br'.*INTERNALDATE "'
-        br'(?P<day>[ 0123][0-9])-(?P<mon>[A-Z][a-z][a-z])-(?P<year>[0-9][0-9][0-9][0-9])'
-        br' (?P<hour>[0-9][0-9]):(?P<min>[0-9][0-9]):(?P<sec>[0-9][0-9])'
-        br' (?P<zonen>[-+])(?P<zoneh>[0-9][0-9])(?P<zonem>[0-9][0-9])'
+Continuation = re.compile(br'\+( (.*))?') # will be accessed bt using group(1)
+Flags = re.compile(br'.*FLAGS \(([^)]*)\)')
+InternalDate = re.compile(br'.*INTERNALDATE "' #ure sau re, depinde de mcu
+        br'([ 0123][0-9])-([A-Z][a-z][a-z])-([0-9][0-9][0-9][0-9])'
+        br' ([0-9][0-9]):([0-9][0-9]):([0-9][0-9])'
+        br' ([-+])([0-9][0-9])([0-9][0-9])'
         br'"')
-# Literal is no longer used; kept for backward compatibility.
-Literal = re.compile(br'.*{(?P<size>\d+)}$', re.ASCII)
+
+#Literal is no longer used; kept for backward compatibility.
+#Literal = re.compile(br'.*{(\d+)}$', re.ASCII) #there is no re.ASCII flag in MicroPython
+Literal = re.compile(br'^[ -~]+$') # not as flexible approach. To be tested!!!!!!!
 MapCRLF = re.compile(br'\r\n|\r|\n')
 # We no longer exclude the ']' character from the data portion of the response
 # code, even though it violates the RFC.  Popular IMAP servers such as Gmail
@@ -100,14 +105,15 @@ MapCRLF = re.compile(br'\r\n|\r|\n')
 # restriction).  However, that seems less likely to be a problem in practice
 # than being unable to correctly parse flags that include ']' chars, which
 # was reported as a real-world problem in issue #21815.
-Response_code = re.compile(br'\[(?P<type>[A-Z-]+)( (?P<data>.*))?\]')
-Untagged_response = re.compile(br'\* (?P<type>[A-Z-]+)( (?P<data>.*))?')
-# Untagged_status is no longer used; kept for backward compatibility
-Untagged_status = re.compile(
-    br'\* (?P<data>\d+) (?P<type>[A-Z-]+)( (?P<data2>.*))?', re.ASCII)
-# We compile these in _mode_xxx.
-_Literal = br'.*{(?P<size>\d+)}$'
-_Untagged_status = br'\* (?P<data>\d+) (?P<type>[A-Z-]+)( (?P<data2>.*))?'
+Response_code = re.compile(br'\[([A-Z-]+)( (.*))?\]')
+Untagged_response = re.compile(br'\* ([A-Z-]+)( (.*))?')
+#Untagged_status is no longer used; kept for backward compatibility
+#Untagged_status = re.compile(br'\* (\d+) ([A-Z-]+)( (.*))?', re.ASCII)
+Untagged_status = re.compile(br'\* ([ -~]+) ([A-Z-]+)( (.*))?') # Same problem as for the Literal variable 
+
+#We compile these in _mode_xxx.
+_Literal = br'.*{(\d+)}$'
+_Untagged_status = br'\* (\d+) ([A-Z-]+)( (.*))?'
 
 
 class IMAP4:
@@ -319,6 +325,7 @@ class IMAP4:
         """Shutdown connection to server.
         (typ, [data]) = <instance>.logout()
         Returns server 'BYE' response.
+        """
        
 
 
@@ -326,6 +333,7 @@ class IMAP4:
         """List 'subscribed' mailbox names in directory matching pattern.
         (typ, [data, ...]) = <instance>.lsub(directory='""', pattern='*')
         'data' are tuples of message part envelope and data.
+        """
   
 
     def myrights(self, mailbox):
@@ -337,6 +345,7 @@ class IMAP4:
     def namespace(self):
         """ Returns IMAP namespaces ala rfc2342
         (typ, [data, ...]) = <instance>.namespace()
+        """
 
 
 
@@ -351,6 +360,7 @@ class IMAP4:
         """Fetch truncated part of a message.
         (typ, [data, ...]) = <instance>.partial(message_num, message_part, start, length)
         'data' is tuple of message part envelope and data.
+        """
   
 
 
@@ -418,6 +428,8 @@ class IMAP4:
 
 
     def starttls(self, ssl_context=None):
+        """
+        """
 
 
     def status(self, mailbox, names):
@@ -435,20 +447,32 @@ class IMAP4:
 
 
     def subscribe(self, mailbox):
+        """
+        """
 
 
     def thread(self, threading_algorithm, charset, *search_criteria):
+        """
+        """
 
 
     def uid(self, command, *args):
+        """
+        """
 
     def unsubscribe(self, mailbox):
+        """
+        """
 
 
     def unselect(self):
+        """
+        """
 
 
     def xatom(self, name, *args):
+        """
+        """
 
 
     
@@ -475,11 +499,17 @@ if HAVE_SSL:
 
         def __init__(self, host='', port=IMAP4_SSL_PORT, keyfile=None,
                      certfile=None, ssl_context=None, timeout=None):
+            """
+            """
             
         def _create_socket(self, timeout):
+            """
+            """
             
 
         def open(self, host='', port=IMAP4_SSL_PORT, timeout=None):
+            """
+            """
 
     __all__.append("IMAP4_SSL")
 
