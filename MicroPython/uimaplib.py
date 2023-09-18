@@ -34,7 +34,7 @@ AllowedVersions = ('IMAP4REV1', 'IMAP4')        # Most recent first
 _MAXLINE = 1000000
 
 
-#   	Commands in version 0.1 none implemented
+
 
 Commands = {
         # name            valid states
@@ -172,9 +172,190 @@ class IMAP4:
         self.tagnum = 0
         self._tls_established = False
         self._mode_ascii()
+        
+         # Open socket to server.
 
-       
+        self.open(host, port, timeout)
 
+        try:
+            self._connect()
+        except Exception:
+            try:
+                self.shutdown()
+            except OSError:
+                pass
+            raise
+    def _mode_ascii(self):
+        self.utf8_enabled = False
+        self._encoding = 'ascii'
+        self.Literal = re.compile(_Literal) # re.ascii
+        self.Untagged_status = re.compile(_Untagged_status) #re.ascii
+        
+    def _mode_utf8(self):
+        self.utf8_enabled = True
+        self._encoding = 'utf-8'
+        self.Literal = re.compile(_Literal)
+        self.Untagged_status = re.compile(_Untagged_status)
+        
+    def _connect(self):
+        # Create unique tag for this session,
+        # and compile tagged response matcher.
+
+        self.tagpre = Int2AP(random.randint(4096, 65535))
+        self.tagre = re.compile(br'(' + tagpre + br'\d+) ([A-Z]+) (.*)')
+
+        # Get server welcome message,
+        # request and store CAPABILITY response.
+
+        if __debug__:
+            self._cmd_log_len = 10
+            self._cmd_log_idx = 0
+            self._cmd_log = {}           # Last `_cmd_log_len' interactions
+            if self.debug >= 1:
+                self._mesg('imaplib version %s' % __version__)
+                self._mesg('new IMAP4 connection, tag=%s' % self.tagpre)
+
+        self.welcome = self._get_response()
+        if 'PREAUTH' in self.untagged_responses:
+            self.state = 'AUTH'
+        elif 'OK' in self.untagged_responses:
+            self.state = 'NONAUTH'
+        else:
+            raise self.error(self.welcome)
+
+        self._get_capabilities()
+        if __debug__:
+            if self.debug >= 3:
+                self._mesg('CAPABILITIES: %r' % (self.capabilities,))
+
+        for version in AllowedVersions:
+            if not version in self.capabilities:
+                continue
+            self.PROTOCOL_VERSION = version
+            return
+
+        raise self.error('server not IMAP4 compliant')
+    
+    def __getattr__(self, attr):
+        #       Allow UPPERCASE variants of IMAP4 command methods.
+        if attr in Commands:
+            return getattr(self, attr.lower())
+        raise AttributeError("Unknown IMAP4 command: '%s'" % attr)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        if self.state == "LOGOUT":
+            return
+
+        try:
+            self.logout()
+        except OSError:
+            pass
+        
+        
+     #       Overridable methods
+
+
+    def _create_socket(self, timeout):
+        # Default value of IMAP4.host is '', but socket.getaddrinfo()
+        # (which is used by socket.create_connection()) expects None
+        # as a default value for host.
+        if timeout is not None and not timeout:
+            raise ValueError('Non-blocking socket (timeout=0) is not supported')
+        host = None if not self.host else self.host
+        sys.audit("imaplib.open", self, self.host, self.port)
+        address = (host, self.port)
+        if timeout is not None:
+            return socket.create_connection(address, timeout)
+        return socket.create_connection(address)
+
+    def open(self, host='', port=IMAP4_PORT, timeout=None):
+        """Setup connection to remote server on "host:port"
+            (default: localhost:standard IMAP4 port).
+        This connection will be used by the routines:
+            read, readline, send, shutdown.
+        """
+        self.host = host
+        self.port = port
+        self.sock = self._create_socket(timeout)
+        self.file = self.sock.makefile('rb')
+        
+    def read(self, size):
+        """Read 'size' bytes from remote."""
+        return self.file.read(size)
+
+
+    def readline(self):
+        """Read line from remote."""
+        line = self.file.readline(_MAXLINE + 1)
+        if len(line) > _MAXLINE:
+            raise self.error("got more than %d bytes" % _MAXLINE)
+        return line
+
+
+    def send(self, data):
+        """Send data to remote."""
+        sys.audit("imaplib.send", self, data)
+        self.sock.sendall(data)
+
+
+    def shutdown(self):
+        """Close I/O established in "open"."""
+        self.file.close()
+        try:
+            self.sock.shutdown(socket.SHUT_RDWR)
+        except OSError as exc:
+            # The server might already have closed the connection.
+            # On Windows, this may result in WSAEINVAL (error 10022):
+            # An invalid operation was attempted.
+            if (exc.errno != errno.ENOTCONN
+               and getattr(exc, 'winerror', 0) != 10022):
+                raise
+        finally:
+            self.sock.close()
+
+
+    def socket(self):
+        """Return socket instance used to connect to IMAP4 server.
+
+        socket = <instance>.socket()
+        """
+        return self.sock
+    
+    
+    #       Utility methods
+
+
+    def recent(self):
+        """Return most recent 'RECENT' responses if any exist,
+        else prompt server for an update using the 'NOOP' command.
+
+        (typ, [data]) = <instance>.recent()
+
+        'data' is None if no new messages,
+        else list of RECENT responses, most recent last.
+        """
+        name = 'RECENT'
+        typ, dat = self._untagged_response('OK', [None], name)
+        if dat[-1]:
+            return typ, dat
+        typ, dat = self.noop()  # Prod server for response
+        return self._untagged_response(typ, dat, name)
+
+
+    def response(self, code):
+        """Return data for response 'code' if received, or None.
+
+        Old value for response 'code' is cleared.
+
+        (code, [data]) = <instance>.response(code)
+        """
+        return self._untagged_response(code, [None], code.upper())
+
+        
+        
     #       IMAP4 commands
 
 
@@ -183,6 +364,23 @@ class IMAP4:
         (typ, [data]) = <instance>.append(mailbox, flags, date_time, message)
                 All args except `message' can be None.
         """
+        name = 'APPEND'
+        if not mailbox:
+            mailbox = 'INBOX'
+        if flags:
+            if (flags[0],flags[-1]) != ('(',')'):
+                flags = '(%s)' % flags
+        else:
+            flags = None
+        if date_time:
+            date_time = Time2Internaldate(date_time)
+        else:
+            date_time = None
+        literal = MapCRLF.sub(CRLF, message)
+        if self.utf8_enabled:
+            literal = b'UTF8 (' + literal + b')'
+        self.literal = literal
+        return self._simple_command(name, mailbox, flags, date_time)
 
 
     def authenticate(self, mechanism, authobject):
@@ -197,17 +395,32 @@ class IMAP4:
         data that will be base64 encoded and sent to the server.  It should
         return None if the client abort response '*' should be sent instead.
         """
+        mech = mechanism.upper()
+        # XXX: shouldn't this code be removed, not commented out?
+        #cap = 'AUTH=%s' % mech
+        #if not cap in self.capabilities:       # Let the server decide!
+        #    raise self.error("Server doesn't allow %s authentication." % mech)
+        self.literal = _Authenticator(authobject).process
+        typ, dat = self._simple_command('AUTHENTICATE', mech)
+        if typ != 'OK':
+            raise self.error(dat[-1].decode('utf-8', 'replace'))
+        self.state = 'AUTH'
+        return typ, dat
 
 
     def capability(self):
         """(typ, [data]) = <instance>.capability()
         Fetch capabilities list from server."""
+        name = 'CAPABILITY'
+        typ, dat = self._simple_command(name)
+        return self._untagged_response(typ, dat, name)
 
 
     def check(self):
         """Checkpoint mailbox on server.
         (typ, [data]) = <instance>.check()
         """
+        return self._simple_command('CHECK')
 
 
     def close(self):
@@ -216,6 +429,11 @@ class IMAP4:
         This is the recommended command before 'LOGOUT'.
         (typ, [data]) = <instance>.close()
         """
+        try:
+            typ, dat = self._simple_command('CLOSE')
+        finally:
+            self.state = 'AUTH'
+        return typ, dat
       
 
 
@@ -223,28 +441,38 @@ class IMAP4:
         """Copy 'message_set' messages onto end of 'new_mailbox'.
         (typ, [data]) = <instance>.copy(message_set, new_mailbox)
         """
+        return self._simple_command('COPY', message_set, new_mailbox)
 
 
     def create(self, mailbox):
         """Create new mailbox.
         (typ, [data]) = <instance>.create(mailbox)
         """
+        return self._simple_command('CREATE', mailbox)
 
 
     def delete(self, mailbox):
         """Delete old mailbox.
         (typ, [data]) = <instance>.delete(mailbox)
         """
+        return self._simple_command('DELETE', mailbox)
 
     def deleteacl(self, mailbox, who):
         """Delete the ACLs (remove any rights) set for who on mailbox.
         (typ, [data]) = <instance>.deleteacl(mailbox, who)
         """
+        return self._simple_command('DELETEACL', mailbox, who)
 
     def enable(self, capability):
         """Send an RFC5161 enable string to the server.
         (typ, [data]) = <instance>.enable(capability)
         """
+        if 'ENABLE' not in self.capabilities:
+            raise IMAP4.error("Server does not support ENABLE")
+        typ, data = self._simple_command('ENABLE', capability)
+        if typ == 'OK' and 'UTF8=ACCEPT' in capability.upper():
+            self._mode_utf8()
+        return typ, data
       
 
     def expunge(self):
@@ -253,6 +481,9 @@ class IMAP4:
         (typ, [data]) = <instance>.expunge()
         'data' is list of 'EXPUNGE'd message numbers in order received.
         """
+        name = 'EXPUNGE'
+        typ, dat = self._simple_command(name)
+        return self._untagged_response(typ, dat, name)
     
 
 
@@ -263,6 +494,9 @@ class IMAP4:
         enclosed in parentheses, eg: "(UID BODY[TEXT])".
         'data' are tuples of message part envelope and data.
         """
+        name = 'FETCH'
+        typ, dat = self._simple_command(name, message_set, message_parts)
+        return self._untagged_response(typ, dat, name)
    
 
 
@@ -270,12 +504,17 @@ class IMAP4:
         """Get the ACLs for a mailbox.
         (typ, [data]) = <instance>.getacl(mailbox)
         """
+        typ, dat = self._simple_command('GETACL', mailbox)
+        return self._untagged_response(typ, dat, 'ACL')
   
 
 
     def getannotation(self, mailbox, entry, attribute):
         """(typ, [data]) = <instance>.getannotation(mailbox, entry, attribute)
         Retrieve ANNOTATIONs."""
+        
+        typ, dat = self._simple_command('GETANNOTATION', mailbox, entry, attribute)
+        return self._untagged_response(typ, dat, 'ANNOTATION')
 
 
 
@@ -284,12 +523,18 @@ class IMAP4:
         Part of the IMAP4 QUOTA extension defined in rfc2087.
         (typ, [data]) = <instance>.getquota(root)
         """
+        typ, dat = self._simple_command('GETQUOTA', root)
+        return self._untagged_response(typ, dat, 'QUOTA')
 
 
     def getquotaroot(self, mailbox):
         """Get the list of quota roots for the named mailbox.
         (typ, [[QUOTAROOT responses...], [QUOTA responses]]) = <instance>.getquotaroot(mailbox)
         """
+        typ, dat = self._simple_command('GETQUOTAROOT', mailbox)
+        typ, quota = self._untagged_response(typ, dat, 'QUOTA')
+        typ, quotaroot = self._untagged_response(typ, dat, 'QUOTAROOT')
+        return typ, [quotaroot, quota]
 
 
 
@@ -298,6 +543,10 @@ class IMAP4:
         (typ, [data]) = <instance>.list(directory='""', pattern='*')
         'data' is list of LIST responses.
         """
+        name = 'LIST'
+        typ, dat = self._simple_command(name, directory, pattern)
+        return self._untagged_response(typ, dat, name)
+
 
 
 
@@ -306,6 +555,12 @@ class IMAP4:
         (typ, [data]) = <instance>.login(user, password)
         NB: 'password' will be quoted.
         """
+        typ, dat = self._simple_command('LOGIN', user, self._quote(password))
+        if typ != 'OK':
+            raise self.error(dat[-1])
+        self.state = 'AUTH'
+        return typ, dat
+        
 
 
 
@@ -313,11 +568,17 @@ class IMAP4:
         """ Force use of CRAM-MD5 authentication.
         (typ, [data]) = <instance>.login_cram_md5(user, password)
         """
+        self.user, self.password = user, password
+        return self.authenticate('CRAM-MD5', self._CRAM_MD5_AUTH)
 
 
 
     def _CRAM_MD5_AUTH(self, challenge):
         """ Authobject to use with CRAM-MD5 authentication. """
+        import hmac # !
+        pwd = (self.password.encode('utf-8') if isinstance(self.password, str)
+                                             else self.password)
+        return self.user + " " + hmac.HMAC(pwd, challenge, 'md5').hexdigest()
 
 
 
@@ -326,6 +587,10 @@ class IMAP4:
         (typ, [data]) = <instance>.logout()
         Returns server 'BYE' response.
         """
+        self.state = 'LOGOUT'
+        typ, dat = self._simple_command('LOGOUT')
+        self.shutdown()
+        return typ, dat
        
 
 
@@ -334,18 +599,26 @@ class IMAP4:
         (typ, [data, ...]) = <instance>.lsub(directory='""', pattern='*')
         'data' are tuples of message part envelope and data.
         """
+        name = 'LSUB'
+        typ, dat = self._simple_command(name, directory, pattern)
+        return self._untagged_response(typ, dat, name)
   
 
     def myrights(self, mailbox):
         """Show my ACLs for a mailbox (i.e. the rights that I have on mailbox).
         (typ, [data]) = <instance>.myrights(mailbox)
         """
+        typ,dat = self._simple_command('MYRIGHTS', mailbox)
+        return self._untagged_response(typ, dat, 'MYRIGHTS')
 
 
     def namespace(self):
         """ Returns IMAP namespaces ala rfc2342
         (typ, [data, ...]) = <instance>.namespace()
         """
+        name = 'NAMESPACE'
+        typ, dat = self._simple_command(name)
+        return self._untagged_response(typ, dat, name)
 
 
 
@@ -353,6 +626,10 @@ class IMAP4:
         """Send NOOP command.
         (typ, [data]) = <instance>.noop()
         """
+        if __debug__:
+            if self.debug >= 3:
+                self._dump_ur(self.untagged_responses)
+        return self._simple_command('NOOP')
 
 
 
@@ -361,6 +638,9 @@ class IMAP4:
         (typ, [data, ...]) = <instance>.partial(message_num, message_part, start, length)
         'data' is tuple of message part envelope and data.
         """
+        name = 'PARTIAL'
+        typ, dat = self._simple_command(name, message_num, message_part, start, length)
+        return self._untagged_response(typ, dat, 'FETCH')
   
 
 
@@ -370,6 +650,9 @@ class IMAP4:
         mailbox.
         (typ, [data]) = <instance>.proxyauth(user)
         """
+        name = 'PROXYAUTH'
+        return self._simple_command('PROXYAUTH', user)
+
 
 
 
@@ -377,6 +660,7 @@ class IMAP4:
         """Rename old mailbox name to new.
         (typ, [data]) = <instance>.rename(oldmailbox, newmailbox)
         """
+        return self._simple_command('RENAME', oldmailbox, newmailbox)
 
 
     def search(self, charset, *criteria):
@@ -385,6 +669,14 @@ class IMAP4:
         'data' is space separated list of matching message numbers.
         If UTF8 is enabled, charset MUST be None.
         """
+        name = 'SEARCH'
+        if charset:
+            if self.utf8_enabled:
+                raise IMAP4.error("Non-None charset not valid in UTF8 mode")
+            typ, dat = self._simple_command(name, 'CHARSET', charset, *criteria)
+        else:
+            typ, dat = self._simple_command(name, *criteria)
+        return self._untagged_response(typ, dat, name)
   
 
 
@@ -396,6 +688,24 @@ class IMAP4:
         Mandated responses are ('FLAGS', 'EXISTS', 'RECENT', 'UIDVALIDITY'), so
         other responses should be obtained via <instance>.response('FLAGS') etc.
         """
+        self.untagged_responses = {}    # Flush old responses.
+        self.is_readonly = readonly
+        if readonly:
+            name = 'EXAMINE'
+        else:
+            name = 'SELECT'
+        typ, dat = self._simple_command(name, mailbox)
+        if typ != 'OK':
+            self.state = 'AUTH'     # Might have been 'SELECTED'
+            return typ, dat
+        self.state = 'SELECTED'
+        if 'READ-ONLY' in self.untagged_responses \
+                and not readonly:
+            if __debug__:
+                if self.debug >= 1:
+                    self._dump_ur(self.untagged_responses)
+            raise self.readonly('%s is not writable' % mailbox)
+        return typ, self.untagged_responses.get('EXISTS', [None])
         
 
 
@@ -403,12 +713,16 @@ class IMAP4:
         """Set a mailbox acl.
         (typ, [data]) = <instance>.setacl(mailbox, who, what)
         """
+        return self._simple_command('SETACL', mailbox, who, what)
         
 
 
     def setannotation(self, *args):
         """(typ, [data]) = <instance>.setannotation(mailbox[, entry, attribute]+)
         Set ANNOTATIONs."""
+        
+        typ, dat = self._simple_command('SETANNOTATION', *args)
+        return self._untagged_response(typ, dat, 'ANNOTATION')
 
        
 
@@ -417,6 +731,8 @@ class IMAP4:
         """Set the quota root's resource limits.
         (typ, [data]) = <instance>.setquota(root, limits)
         """
+        typ, dat = self._simple_command('SETQUOTA', root, limits)
+        return self._untagged_response(typ, dat, 'QUOTA')
         
 
 
@@ -424,18 +740,48 @@ class IMAP4:
         """IMAP4rev1 extension SORT command.
         (typ, [data]) = <instance>.sort(sort_criteria, charset, search_criteria, ...)
         """
+        name = 'SORT'
+        #if not name in self.capabilities:      # Let the server decide!
+        #       raise self.error('unimplemented extension command: %s' % name)
+        if (sort_criteria[0],sort_criteria[-1]) != ('(',')'):
+            sort_criteria = '(%s)' % sort_criteria
+        typ, dat = self._simple_command(name, sort_criteria, charset, *search_criteria)
+        return self._untagged_response(typ, dat, name)
         
 
 
     def starttls(self, ssl_context=None):
-        """
-        """
+        name = 'STARTTLS'
+        if not HAVE_SSL:
+            raise self.error('SSL support missing')
+        if self._tls_established:
+            raise self.abort('TLS session already established')
+        if name not in self.capabilities:
+            raise self.abort('TLS not supported by server')
+        # Generate a default SSL context if none was passed.
+        if ssl_context is None:
+            ssl_context = ssl._create_stdlib_context()
+        typ, dat = self._simple_command(name)
+        if typ == 'OK':
+            self.sock = ssl_context.wrap_socket(self.sock,
+                                                server_hostname=self.host)
+            self.file = self.sock.makefile('rb')
+            self._tls_established = True
+            self._get_capabilities()
+        else:
+            raise self.error("Couldn't establish TLS session")
+        return self._untagged_response(typ, dat, name)
 
 
     def status(self, mailbox, names):
         """Request named status conditions for mailbox.
         (typ, [data]) = <instance>.status(mailbox, names)
         """
+        name = 'STATUS'
+        #if self.PROTOCOL_VERSION == 'IMAP4':   # Let the server decide!
+        #    raise self.error('%s unimplemented in IMAP4 (obtain IMAP4rev1 server, or re-code)' % name)
+        typ, dat = self._simple_command(name, mailbox, names)
+        return self._untagged_response(typ, dat, name)
         
 
 
@@ -443,36 +789,95 @@ class IMAP4:
         """Alters flag dispositions for messages in mailbox.
         (typ, [data]) = <instance>.store(message_set, command, flags)
         """
+        if (flags[0],flags[-1]) != ('(',')'):
+            flags = '(%s)' % flags  # Avoid quoting the flags
+        typ, dat = self._simple_command('STORE', message_set, command, flags)
+        return self._untagged_response(typ, dat, 'FETCH')
         
 
 
     def subscribe(self, mailbox):
+        """Subscribe to new mailbox.
+
+        (typ, [data]) = <instance>.subscribe(mailbox)
         """
-        """
+        return self._simple_command('SUBSCRIBE', mailbox)
 
 
     def thread(self, threading_algorithm, charset, *search_criteria):
+        """IMAPrev1 extension THREAD command.
+
+        (type, [data]) = <instance>.thread(threading_algorithm, charset, search_criteria, ...)
         """
-        """
+        name = 'THREAD'
+        typ, dat = self._simple_command(name, threading_algorithm, charset, *search_criteria)
+        return self._untagged_response(typ, dat, name)
 
 
     def uid(self, command, *args):
+        """Execute "command arg ..." with messages identified by UID,
+                rather than message number.
+
+        (typ, [data]) = <instance>.uid(command, arg1, arg2, ...)
+
+        Returns response appropriate to 'command'.
         """
-        """
+        command = command.upper()
+        if not command in Commands:
+            raise self.error("Unknown IMAP4 UID command: %s" % command)
+        if self.state not in Commands[command]:
+            raise self.error("command %s illegal in state %s, "
+                             "only allowed in states %s" %
+                             (command, self.state,
+                              ', '.join(Commands[command])))
+        name = 'UID'
+        typ, dat = self._simple_command(name, command, *args)
+        if command in ('SEARCH', 'SORT', 'THREAD'):
+            name = command
+        else:
+            name = 'FETCH'
+        return self._untagged_response(typ, dat, name)
 
     def unsubscribe(self, mailbox):
+        """Unsubscribe from old mailbox.
+
+        (typ, [data]) = <instance>.unsubscribe(mailbox)
         """
-        """
+        return self._simple_command('UNSUBSCRIBE', mailbox)
 
 
     def unselect(self):
+        """Free server's resources associated with the selected mailbox
+        and returns the server to the authenticated state.
+        This command performs the same actions as CLOSE, except
+        that no messages are permanently removed from the currently
+        selected mailbox.
+
+        (typ, [data]) = <instance>.unselect()
         """
-        """
+        try:
+            typ, data = self._simple_command('UNSELECT')
+        finally:
+            self.state = 'AUTH'
+        return typ, data
 
 
     def xatom(self, name, *args):
+        """Allow simple extension commands
+                notified by server in CAPABILITY response.
+
+        Assumes command is legal in current state.
+
+        (typ, [data]) = <instance>.xatom(name, arg, ...)
+
+        Returns response appropriate to extension command `name'.
         """
-        """
+        name = name.upper()
+        #if not name in self.capabilities:      # Let the server decide!
+        #    raise self.error('unknown extension command: %s' % name)
+        if not name in Commands:
+            Commands[name] = (self.state,)
+        return self._simple_command(name, *args)
 
 
     
@@ -512,4 +917,104 @@ if HAVE_SSL:
             """
 
     __all__.append("IMAP4_SSL")
+    
+    
+    
+def Internaldate2tuple(resp):
+    """Parse an IMAP4 INTERNALDATE string.
+
+    Return corresponding local time.  The return value is a
+    time.struct_time tuple or None if the string has wrong format.
+    """
+
+    mo = InternalDate.match(resp)
+    if not mo:
+        return None
+
+    mon = Mon2num[mo.group('mon')]
+    zonen = mo.group('zonen')
+
+    day = int(mo.group('day'))
+    year = int(mo.group('year'))
+    hour = int(mo.group('hour'))
+    min = int(mo.group('min'))
+    sec = int(mo.group('sec'))
+    zoneh = int(mo.group('zoneh'))
+    zonem = int(mo.group('zonem'))
+
+    # INTERNALDATE timezone must be subtracted to get UT
+
+    zone = (zoneh*60 + zonem)*60
+    if zonen == b'-':
+        zone = -zone
+
+    tt = (year, mon, day, hour, min, sec, -1, -1, -1)
+    utc = calendar.timegm(tt) - zone
+
+    return time.localtime(utc)
+
+
+
+def Int2AP(num):
+
+    """Convert integer to A-P string representation."""
+
+    val = b''; AP = b'ABCDEFGHIJKLMNOP'
+    num = int(abs(num))
+    while num:
+        num, mod = divmod(num, 16)
+        val = AP[mod:mod+1] + val
+    return val
+
+
+
+def ParseFlags(resp):
+
+    """Convert IMAP4 flags response to python tuple."""
+
+    mo = Flags.match(resp)
+    if not mo:
+        return ()
+
+    return tuple(mo.group('flags').split())
+
+
+def Time2Internaldate(date_time):
+
+    """Convert date_time to IMAP4 INTERNALDATE representation.
+
+    Return string in form: '"DD-Mmm-YYYY HH:MM:SS +HHMM"'.  The
+    date_time argument can be a number (int or float) representing
+    seconds since epoch (as returned by time.time()), a 9-tuple
+    representing local time, an instance of time.struct_time (as
+    returned by time.localtime()), an aware datetime instance or a
+    double-quoted string.  In the last case, it is assumed to already
+    be in the correct format.
+    """
+    if isinstance(date_time, (int, float)):
+        dt = datetime.fromtimestamp(date_time,
+                                    timezone.utc).astimezone()
+    elif isinstance(date_time, tuple):
+        try:
+            gmtoff = date_time.tm_gmtoff
+        except AttributeError:
+            if time.daylight:
+                dst = date_time[8]
+                if dst == -1:
+                    dst = time.localtime(time.mktime(date_time))[8]
+                gmtoff = -(time.timezone, time.altzone)[dst]
+            else:
+                gmtoff = -time.timezone
+        delta = timedelta(seconds=gmtoff)
+        dt = datetime(*date_time[:6], tzinfo=timezone(delta))
+    elif isinstance(date_time, datetime):
+        if date_time.tzinfo is None:
+            raise ValueError("date_time must be aware")
+        dt = date_time
+    elif isinstance(date_time, str) and (date_time[0],date_time[-1]) == ('"','"'):
+        return date_time        # Assume in correct format
+    else:
+        raise ValueError("date_time not of a known type")
+    fmt = '"%d-{}-%Y %H:%M:%S %z"'.format(Months[dt.month])
+    return dt.strftime(fmt)
 
