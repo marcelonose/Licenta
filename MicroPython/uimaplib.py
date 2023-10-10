@@ -4,7 +4,8 @@ __version__ = "0.1"
 
 #imported libraries
 
-import re
+import re, sys
+import socket
 
 
 try:
@@ -178,7 +179,7 @@ class IMAP4:
         self.open(host, port, timeout)
 
         try:
-            self._connect()
+            self._()
         except Exception:
             try:
                 self.shutdown()
@@ -262,14 +263,18 @@ class IMAP4:
         # Default value of IMAP4.host is '', but socket.getaddrinfo()
         # (which is used by socket.create_connection()) expects None
         # as a default value for host.
+        s = socket.socket()
         if timeout is not None and not timeout:
             raise ValueError('Non-blocking socket (timeout=0) is not supported')
         host = None if not self.host else self.host
-        sys.audit("imaplib.open", self, self.host, self.port)
-        address = (host, self.port)
+        #sys.audit("imaplib.open", self, self.host, self.port)
         if timeout is not None:
-            return socket.create_connection(address, timeout)
-        return socket.create_connection(address)
+            s.settimeout(timeout)
+            s.connect(socket.getaddrinfo(host, self.port)[0][-1])
+            #socket.connect(socket.getaddrinfo(address, timeout))
+            return s
+        s.connect(socket.getaddrinfo(host, self.port)[0][-1])
+        return s
 
     def open(self, host='', port=IMAP4_PORT, timeout=None):
         """Setup connection to remote server on "host:port"
@@ -280,6 +285,7 @@ class IMAP4:
         self.host = host
         self.port = port
         self.sock = self._create_socket(timeout)
+        print(self.sock)
         self.file = self.sock.makefile('rb')
         
     def read(self, size):
@@ -297,7 +303,7 @@ class IMAP4:
 
     def send(self, data):
         """Send data to remote."""
-        sys.audit("imaplib.send", self, data)
+        #sys.audit("imaplib.send", self, data)
         self.sock.sendall(data)
 
 
