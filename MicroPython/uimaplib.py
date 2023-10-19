@@ -4,7 +4,7 @@ __version__ = "0.1"
 
 #imported libraries
 
-import re, sys
+import re, sys, time, random
 import socket
 
 
@@ -32,7 +32,7 @@ AllowedVersions = ('IMAP4REV1', 'IMAP4')        # Most recent first
 # to accept command lines up to 8000 octets, so we used to use 10K here.
 # In the modern world (eg: gmail) the response to, for example, a
 # search command can be quite large, so we now use 1M.
-_MAXLINE = 1000000
+_MAXLINE = 100000#1000000
 
 
 
@@ -179,7 +179,7 @@ class IMAP4:
         self.open(host, port, timeout)
 
         try:
-            self._()
+            self._connect()
         except Exception:
             try:
                 self.shutdown()
@@ -203,7 +203,7 @@ class IMAP4:
         # and compile tagged response matcher.
 
         self.tagpre = Int2AP(random.randint(4096, 65535))
-        self.tagre = re.compile(br'(' + tagpre + br'\d+) ([A-Z]+) (.*)')
+        self.tagre = re.compile(br'(' + self.tagpre + br'\d+) ([A-Z]+) (.*)')
 
         # Get server welcome message,
         # request and store CAPABILITY response.
@@ -311,7 +311,7 @@ class IMAP4:
         """Close I/O established in "open"."""
         self.file.close()
         try:
-            self.sock.shutdown(socket.SHUT_RDWR)
+            self.sock.close()#self.sock.shutdown(socket.SHUT_RDWR)
         except OSError as exc:
             # The server might already have closed the connection.
             # On Windows, this may result in WSAEINVAL (error 10022):
@@ -884,8 +884,346 @@ class IMAP4:
         if not name in Commands:
             Commands[name] = (self.state,)
         return self._simple_command(name, *args)
+    #       Private methods
 
 
+    def _append_untagged(self, typ, dat):
+        if dat is None:
+            dat = b''
+        ur = self.untagged_responses
+        if __debug__:
+            if self.debug >= 5:
+                self._mesg('untagged_responses[%s] %s += ["%r"]' %
+                        (typ, len(ur.get(typ,'')), dat))
+        if typ in ur:
+            ur[typ].append(dat)
+        else:
+            ur[typ] = [dat]
+
+
+    def _check_bye(self):
+        bye = self.untagged_responses.get('BYE')
+        if bye:
+            raise self.abort(bye[-1].decode(self._encoding, 'replace'))
+
+
+    def _command(self, name, *args):
+
+        if self.state not in Commands[name]:
+            self.literal = None
+            raise self.error("command %s illegal in state %s, "
+                             "only allowed in states %s" %
+                             (name, self.state,
+                              ', '.join(Commands[name])))
+
+        for typ in ('OK', 'NO', 'BAD'):
+            if typ in self.untagged_responses:
+                del self.untagged_responses[typ]
+
+        if 'READ-ONLY' in self.untagged_responses \
+        and not self.is_readonly:
+            raise self.readonly('mailbox status changed to READ-ONLY')
+
+        tag = self._new_tag()
+        name = bytes(name, self._encoding)
+        data = tag + b' ' + name
+        for arg in args:
+            if arg is None: continue
+            if isinstance(arg, str):
+                arg = bytes(arg, self._encoding)
+            data = data + b' ' + arg
+
+        literal = self.literal
+        if literal is not None:
+            self.literal = None
+            if type(literal) is type(self._command):
+                literator = literal
+            else:
+                literator = None
+                data = data + bytes(' {%s}' % len(literal), self._encoding)
+
+        if __debug__:
+            if self.debug >= 4:
+                self._mesg('> %r' % data)
+            else:
+                self._log('> %r' % data)
+
+        try:
+            self.send(data + CRLF)
+        except OSError as val:
+            raise self.abort('socket error: %s' % val)
+
+        if literal is None:
+            return tag
+
+        while 1:
+            # Wait for continuation response
+
+            while self._get_response():
+                if self.tagged_commands[tag]:   # BAD/NO?
+                    return tag
+
+            # Send literal
+
+            if literator:
+                literal = literator(self.continuation_response)
+
+            if __debug__:
+                if self.debug >= 4:
+                    self._mesg('write literal size %s' % len(literal))
+
+            try:
+                self.send(literal)
+                self.send(CRLF)
+            except OSError as val:
+                raise self.abort('socket error: %s' % val)
+
+            if not literator:
+                break
+
+        return tag
+
+
+    def _command_complete(self, name, tag):
+        logout = (name == 'LOGOUT')
+        # BYE is expected after LOGOUT
+        if not logout:
+            self._check_bye()
+        try:
+            typ, data = self._get_tagged_response(tag, expect_bye=logout)
+        except self.abort as val:
+            raise self.abort('command: %s => %s' % (name, val))
+        except self.error as val:
+            raise self.error('command: %s => %s' % (name, val))
+        if not logout:
+            self._check_bye()
+        if typ == 'BAD':
+            raise self.error('%s command error: %s %s' % (name, typ, data))
+        return typ, data
+
+
+    def _get_capabilities(self):
+        typ, dat = self.capability()
+        if dat == [None]:
+            raise self.error('no CAPABILITY response from server')
+        dat = str(dat[-1], self._encoding)
+        dat = dat.upper()
+        self.capabilities = tuple(dat.split())
+
+
+    def _get_response(self):
+
+        # Read response and store.
+        #
+        # Returns None for continuation responses,
+        # otherwise first response line received.
+
+        resp = self._get_line()
+
+        # Command completion response?
+
+        if self._match(self.tagre, resp):
+            tag = self.mo.group('tag')
+            if not tag in self.tagged_commands:
+                raise self.abort('unexpected tagged response: %r' % resp)
+
+            typ = self.mo.group('type')
+            typ = str(typ, self._encoding)
+            dat = self.mo.group('data')
+            self.tagged_commands[tag] = (typ, [dat])
+        else:
+            dat2 = None
+
+            # '*' (untagged) responses?
+
+            if not self._match(Untagged_response, resp):
+                if self._match(self.Untagged_status, resp):
+                    dat2 = self.mo.group('data2')
+
+            if self.mo is None:
+                # Only other possibility is '+' (continuation) response...
+
+                if self._match(Continuation, resp):
+                    self.continuation_response = self.mo.group('data')
+                    return None     # NB: indicates continuation
+
+                raise self.abort("unexpected response: %r" % resp)
+
+            typ = self.mo.group(ord('type'))
+            typ = str(typ, self._encoding)
+            dat = self.mo.group('data')
+            if dat is None: dat = b''        # Null untagged response
+            if dat2: dat = dat + b' ' + dat2
+
+            # Is there a literal to come?
+
+            while self._match(self.Literal, dat):
+
+                # Read literal direct from connection.
+
+                size = int(self.mo.group('size'))
+                if __debug__:
+                    if self.debug >= 4:
+                        self._mesg('read literal size %s' % size)
+                data = self.read(size)
+
+                # Store response with literal as tuple
+
+                self._append_untagged(typ, (dat, data))
+
+                # Read trailer - possibly containing another literal
+
+                dat = self._get_line()
+
+            self._append_untagged(typ, dat)
+
+        # Bracketed response information?
+
+        if typ in ('OK', 'NO', 'BAD') and self._match(Response_code, dat):
+            typ = self.mo.group('type')
+            typ = str(typ, self._encoding)
+            self._append_untagged(typ, self.mo.group('data'))
+
+        if __debug__:
+            if self.debug >= 1 and typ in ('NO', 'BAD', 'BYE'):
+                self._mesg('%s response: %r' % (typ, dat))
+
+        return resp
+
+
+    def _get_tagged_response(self, tag, expect_bye=False):
+
+        while 1:
+            result = self.tagged_commands[tag]
+            if result is not None:
+                del self.tagged_commands[tag]
+                return result
+
+            if expect_bye:
+                typ = 'BYE'
+                bye = self.untagged_responses.pop(typ, None)
+                if bye is not None:
+                    # Server replies to the "LOGOUT" command with "BYE"
+                    return (typ, bye)
+
+            # If we've seen a BYE at this point, the socket will be
+            # closed, so report the BYE now.
+            self._check_bye()
+
+            # Some have reported "unexpected response" exceptions.
+            # Note that ignoring them here causes loops.
+            # Instead, send me details of the unexpected response and
+            # I'll update the code in `_get_response()'.
+
+            try:
+                self._get_response()
+            except self.abort as val:
+                if __debug__:
+                    if self.debug >= 1:
+                        self.print_log()
+                raise
+
+
+    def _get_line(self):
+
+        line = self.readline()
+        if not line:
+            raise self.abort('socket error: EOF')
+
+        # Protocol mandates all lines terminated by CRLF
+        if not line.endswith(b'\r\n'):
+            raise self.abort('socket error: unterminated line: %r' % line)
+
+        line = line[:-2]
+        if __debug__:
+            if self.debug >= 4:
+                self._mesg('< %r' % line)
+            else:
+                self._log('< %r' % line)
+        return line
+
+
+    def _match(self, cre, s):
+
+        # Run compiled regular expression match method on 's'.
+        # Save result, return success.
+
+        self.mo = cre.match(s)
+        if __debug__:
+            if self.mo is not None and self.debug >= 5:
+                self._mesg("\tmatched %r => %r" % (cre.pattern, self.mo.groups()))
+        return self.mo is not None
+
+
+    def _new_tag(self):
+
+        tag = self.tagpre + bytes(str(self.tagnum), self._encoding)
+        self.tagnum = self.tagnum + 1
+        self.tagged_commands[tag] = None
+        return tag
+
+
+    def _quote(self, arg):
+
+        arg = arg.replace('\\', '\\\\')
+        arg = arg.replace('"', '\\"')
+
+        return '"' + arg + '"'
+
+
+    def _simple_command(self, name, *args):
+
+        return self._command_complete(name, self._command(name, *args))
+
+
+    def _untagged_response(self, typ, dat, name):
+        if typ == 'NO':
+            return typ, dat
+        if not name in self.untagged_responses:
+            return typ, [None]
+        data = self.untagged_responses.pop(name)
+        if __debug__:
+            if self.debug >= 5:
+                self._mesg('untagged_responses[%s] => %s' % (name, data))
+        return typ, data
+
+
+    if __debug__:
+
+        def _mesg(self, s, secs=None):
+            if secs is None:
+                secs = time.time()
+            tm = time.strftime('%M:%S', time.localtime(secs))
+            sys.stderr.write('  %s.%02d %s\n' % (tm, (secs*100)%100, s))
+            sys.stderr.flush()
+
+        def _dump_ur(self, untagged_resp_dict):
+            if not untagged_resp_dict:
+                return
+            items = []
+            for key, value in untagged_resp_dict.items():
+                items.append('{}: {!r}'.format(key, value))
+            self._mesg('untagged responses dump:' + '\n\t\t'.join(items))
+
+        def _log(self, line):
+            # Keep log of last `_cmd_log_len' interactions for debugging.
+            self._cmd_log[self._cmd_log_idx] = (line, time.time())
+            self._cmd_log_idx += 1
+            if self._cmd_log_idx >= self._cmd_log_len:
+                self._cmd_log_idx = 0
+
+        def print_log(self):
+            self._mesg('last %d IMAP4 interactions:' % len(self._cmd_log))
+            i, n = self._cmd_log_idx, self._cmd_log_len
+            while n:
+                try:
+                    self._mesg(*self._cmd_log[i])
+                except:
+                    pass
+                i += 1
+                if i >= self._cmd_log_len:
+                    i = 0
+                n -= 1
     
 
 if HAVE_SSL:
