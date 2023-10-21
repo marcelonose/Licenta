@@ -4,7 +4,7 @@ __version__ = "0.1"
 
 #imported libraries
 
-import re, sys, time, random
+import re, sys, time, random, ubinascii
 import socket
 
 
@@ -32,7 +32,7 @@ AllowedVersions = ('IMAP4REV1', 'IMAP4')        # Most recent first
 # to accept command lines up to 8000 octets, so we used to use 10K here.
 # In the modern world (eg: gmail) the response to, for example, a
 # search command can be quite large, so we now use 1M.
-_MAXLINE = 100000#1000000
+_MAXLINE = 10000#1000000
 
 
 
@@ -189,8 +189,12 @@ class IMAP4:
     def _mode_ascii(self):
         self.utf8_enabled = False
         self._encoding = 'ascii'
-        self.Literal = re.compile(_Literal) # re.ascii
-        self.Untagged_status = re.compile(_Untagged_status) #re.ascii
+        self.Literal = re.compile(_Literal)
+        #self.Literal = self.Literal.decode(self._encoding) # re.ascii
+        #self.Literal = ubinascii.unhexlify(str(Literal)).decode(self._encoding)
+        self.Untagged_status = re.compile(_Untagged_status)
+        #self.Untagged_status = self.Untagged_status.decode(self._encoding) #re.ascii
+        #self.Untagged_status = ubinascii.unhexlify(Untagged_status).decode(self._encoding)
         
     def _mode_utf8(self):
         self.utf8_enabled = True
@@ -217,12 +221,15 @@ class IMAP4:
                 self._mesg('new IMAP4 connection, tag=%s' % self.tagpre)
 
         self.welcome = self._get_response()
+        print(self.untagged_responses)
+        #self.untagged_responses=self.untagged_responses.decode('ascii')
         if 'PREAUTH' in self.untagged_responses:
             self.state = 'AUTH'
         elif 'OK' in self.untagged_responses:
             self.state = 'NONAUTH'
         else:
             raise self.error(self.welcome)
+        #print("state: " + self.state)
 
         self._get_capabilities()
         if __debug__:
@@ -285,7 +292,7 @@ class IMAP4:
         self.host = host
         self.port = port
         self.sock = self._create_socket(timeout)
-        print(self.sock)
+        #print(self.sock)
         self.file = self.sock.makefile('rb')
         
     def read(self, size):
@@ -908,6 +915,7 @@ class IMAP4:
 
 
     def _command(self, name, *args):
+        print("STATE: " + self.state)
 
         if self.state not in Commands[name]:
             self.literal = None
@@ -1019,18 +1027,24 @@ class IMAP4:
         # otherwise first response line received.
 
         resp = self._get_line()
+        print("resp: " + str(resp))
 
         # Command completion response?
 
         if self._match(self.tagre, resp):
-            tag = self.mo.group('tag')
+            tag = self.mo.group(1)#'tag'
             if not tag in self.tagged_commands:
                 raise self.abort('unexpected tagged response: %r' % resp)
 
-            typ = self.mo.group('type')
-            typ = str(typ, self._encoding)
-            dat = self.mo.group('data')
+            typ = self.mo.group(2)#'type'
+            #print("typ: " + str(typ))
+            typ = typ.decode(self._encoding)#typ = str(typ, self._encoding)
+            #print("typ: " + str(typ))
+            dat = self.mo.group(3)#'data'
             self.tagged_commands[tag] = (typ, [dat])
+            print("1: tag: " + str(tag)+ ", typ: " + str(typ) +  ", dat: "  + str(dat))
+            print("\n")
+
         else:
             dat2 = None
 
@@ -1038,22 +1052,28 @@ class IMAP4:
 
             if not self._match(Untagged_response, resp):
                 if self._match(self.Untagged_status, resp):
-                    dat2 = self.mo.group('data2')
+                    dat2 = self.mo.group(3)#'data2'
 
             if self.mo is None:
                 # Only other possibility is '+' (continuation) response...
 
                 if self._match(Continuation, resp):
-                    self.continuation_response = self.mo.group('data')
+                    self.continuation_response = self.mo.group(2)#'data'
                     return None     # NB: indicates continuation
 
                 raise self.abort("unexpected response: %r" % resp)
-
-            typ = self.mo.group(ord('type'))
-            typ = str(typ, self._encoding)
-            dat = self.mo.group('data')
+            
+            typ = self.mo.group(1)#'type'
+            #print("typ: " + str(typ))
+            typ = typ.decode(self._encoding)#typ = str(typ, self._encoding)
+            #print("typ: " + str(typ))
+            dat = self.mo.group(2)#'data'
             if dat is None: dat = b''        # Null untagged response
             if dat2: dat = dat + b' ' + dat2
+            print("2: typ: " + str(typ)+ ", dat: " + str(dat) +  ", dat2: "  + str(dat2))
+            print("\n")
+            
+
 
             # Is there a literal to come?
 
@@ -1061,7 +1081,7 @@ class IMAP4:
 
                 # Read literal direct from connection.
 
-                size = int(self.mo.group('size'))
+                size = int(self.mo.group(1))#'size'
                 if __debug__:
                     if self.debug >= 4:
                         self._mesg('read literal size %s' % size)
@@ -1080,9 +1100,9 @@ class IMAP4:
         # Bracketed response information?
 
         if typ in ('OK', 'NO', 'BAD') and self._match(Response_code, dat):
-            typ = self.mo.group('type')
-            typ = str(typ, self._encoding)
-            self._append_untagged(typ, self.mo.group('data'))
+            typ = self.mo.group(1)#'type'
+            typ = typ.decode(self._encoding)#typ = str(typ, self._encoding)
+            self._append_untagged(typ, self.mo.group(1))
 
         if __debug__:
             if self.debug >= 1 and typ in ('NO', 'BAD', 'BYE'):
