@@ -508,6 +508,8 @@ class IMAP4:
         'data' are tuples of message part envelope and data.
         """
         name = 'FETCH'
+        #print("message_set din FETCH: " + str(message_set)) # message_set din FETCH: b'2'
+        #print("message_parts din FETCH: " + str(message_parts)) # message_parts din FETCH: (RFC822)
         typ, dat = self._simple_command(name, message_set, message_parts)
         return self._untagged_response(typ, dat, name)
    
@@ -924,17 +926,20 @@ class IMAP4:
                              (name, self.state,
                               ', '.join(Commands[name])))
 
+
+        print("untagged_responses din COMMAND: " + str(self.untagged_responses))
         for typ in ('OK', 'NO', 'BAD'):
             if typ in self.untagged_responses:
                 del self.untagged_responses[typ]
-
+        
         if 'READ-ONLY' in self.untagged_responses \
         and not self.is_readonly:
             raise self.readonly('mailbox status changed to READ-ONLY')
-
+        
         tag = self._new_tag()
         name = bytes(name, self._encoding)
         data = tag + b' ' + name
+        print("name din COMMAND: " + str(name))
         for arg in args:
             if arg is None: continue
             if isinstance(arg, str):
@@ -962,7 +967,9 @@ class IMAP4:
             raise self.abort('socket error: %s' % val)
 
         if literal is None:
+            print("tag 1 din Command: " + str(tag))
             return tag
+        
 
         while 1:
             # Wait for continuation response
@@ -988,6 +995,7 @@ class IMAP4:
 
             if not literator:
                 break
+        print("tag 2 din Command: " + str(tag))
 
         return tag
 
@@ -1063,11 +1071,11 @@ class IMAP4:
 
                 raise self.abort("unexpected response: %r" % resp)
             
-            typ = self.mo.group(1)#'type'
+            typ = self.mo.group(1)#'type' 2
             #print("typ: " + str(typ))
             typ = typ.decode(self._encoding)#typ = str(typ, self._encoding)
             #print("typ: " + str(typ))
-            dat = self.mo.group(2)#'data'
+            dat = self.mo.group(2)#'data' 3
             if dat is None: dat = b''        # Null untagged response
             if dat2: dat = dat + b' ' + dat2
             print("2: typ: " + str(typ)+ ", dat: " + str(dat) +  ", dat2: "  + str(dat2))
@@ -1115,6 +1123,8 @@ class IMAP4:
 
         while 1:
             result = self.tagged_commands[tag]
+            print("tagged_commands din _GET_TAGGED_R: " + str(self.tagged_commands))
+            print("result din _GET_TAGGED_R: " + str(result))
             if result is not None:
                 del self.tagged_commands[tag]
                 return result
@@ -1199,9 +1209,55 @@ class IMAP4:
     def _untagged_response(self, typ, dat, name):
         if typ == 'NO':
             return typ, dat
+        print("untagged responses din _untagged_response..." + str(self.untagged_responses))
+        if name == 'FETCH':
+            print("Extragem mailul din untagged rr")
+            search_pattern = b'Message-ID'
+            search_pattern1 = b'Return-Path'
+            search_pattern2 = b'7bit'
+            mail_found = 0
+            for key, value in self.untagged_responses.items():
+                
+                for item in value:
+                    for element in item:
+                        try:
+                            
+                            if (element[:len(search_pattern1)] == search_pattern1):
+                                print("Mesaj primit\n")
+                                index = element.find(search_pattern2)
+                                
+                                if index != -1:
+                                    result = element[index + len(search_pattern2):]
+                                    print("id: ")
+                                    print(key)
+                                    print("Body:")
+                                    print(str(result, 'utf-8'))
+                                    print("\n")
+                                    mail_found = 1
+                        except:
+                            pass
+                        try:
+                            if (element[:len(search_pattern)] == search_pattern):
+                                print("Mesaj trimis\n")
+                                index = element.find(search_pattern2)
+                                
+                                if index != -1:
+                                    result = element[index + len(search_pattern2):]
+                                    print("id: ")
+                                    print(key)
+                                    print("Body:")
+                                    print(str(result, 'utf-8'))
+                                    print("\n")
+                                    mail_found = 1
+                        except:
+                            pass
+                        if mail_found:
+                            break
         if not name in self.untagged_responses:
             return typ, [None]
         data = self.untagged_responses.pop(name)
+        
+            
         if __debug__:
             if self.debug >= 5:
                 self._mesg('untagged_responses[%s] => %s' % (name, data))
