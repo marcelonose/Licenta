@@ -1206,6 +1206,7 @@ class IMAP4:
     def _untagged_response(self, typ, dat, name):
         if typ == 'NO':
             return typ, dat
+        
         if name == 'FETCH':
             search_pattern = b'Message-ID'
             search_pattern1 = b'Return-Path'
@@ -1223,12 +1224,8 @@ class IMAP4:
                                 
                                 if index != -1:
                                     result = element[index + len(search_pattern2):]
-                                    print("id: ")
-                                    print(key)
-                                    print("Body:")
-                                    print(str(result, 'utf-8'))
-                                    print("\n")
                                     mail_found = 1
+                                    data = str(result, 'utf-8')
                                     self.untagged_responses.pop(key)
                         except:
                             pass
@@ -1239,20 +1236,17 @@ class IMAP4:
                                 
                                 if index != -1:
                                     result = element[index + len(search_pattern2):]
-                                    print("id: ")
-                                    print(key)
-                                    print("Body:")
-                                    print(str(result, 'utf-8'))
-                                    print("\n")
                                     mail_found = 1
+                                    data = str(result, 'utf-8')
                                     self.untagged_responses.pop(key)
                         except:
                             pass
                         if mail_found:
-                            break
+                            return typ, data
         if not name in self.untagged_responses:
             return typ, [None]
         data = self.untagged_responses.pop(name)
+        
         
             
         if __debug__:
