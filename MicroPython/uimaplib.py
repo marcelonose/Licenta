@@ -221,7 +221,6 @@ class IMAP4:
                 self._mesg('new IMAP4 connection, tag=%s' % self.tagpre)
 
         self.welcome = self._get_response()
-        print(self.untagged_responses)
         #self.untagged_responses=self.untagged_responses.decode('ascii')
         if 'PREAUTH' in self.untagged_responses:
             self.state = 'AUTH'
@@ -229,7 +228,6 @@ class IMAP4:
             self.state = 'NONAUTH'
         else:
             raise self.error(self.welcome)
-        #print("state: " + self.state)
 
         self._get_capabilities()
         if __debug__:
@@ -292,7 +290,6 @@ class IMAP4:
         self.host = host
         self.port = port
         self.sock = self._create_socket(timeout)
-        #print(self.sock)
         self.file = self.sock.makefile('rb')
         
     def read(self, size):
@@ -508,8 +505,6 @@ class IMAP4:
         'data' are tuples of message part envelope and data.
         """
         name = 'FETCH'
-        #print("message_set din FETCH: " + str(message_set)) # message_set din FETCH: b'2'
-        #print("message_parts din FETCH: " + str(message_parts)) # message_parts din FETCH: (RFC822)
         typ, dat = self._simple_command(name, message_set, message_parts)
         return self._untagged_response(typ, dat, name)
    
@@ -720,7 +715,13 @@ class IMAP4:
                 if self.debug >= 1:
                     self._dump_ur(self.untagged_responses)
             raise self.readonly('%s is not writable' % mailbox)
-        return typ, self.untagged_responses.get('EXISTS', [None])
+        #print(typ)
+        #print(self.untagged_responses)
+        for key, values in self.untagged_responses.items():
+            if b'EXISTS' in values:
+                value = key
+                
+        return typ, value #self.untagged_responses.get('EXISTS', [None])
         
 
 
@@ -917,7 +918,6 @@ class IMAP4:
 
 
     def _command(self, name, *args):
-        print("STATE: " + self.state)
 
         if self.state not in Commands[name]:
             self.literal = None
@@ -927,7 +927,6 @@ class IMAP4:
                               ', '.join(Commands[name])))
 
 
-        print("untagged_responses din COMMAND: " + str(self.untagged_responses))
         for typ in ('OK', 'NO', 'BAD'):
             if typ in self.untagged_responses:
                 del self.untagged_responses[typ]
@@ -939,7 +938,6 @@ class IMAP4:
         tag = self._new_tag()
         name = bytes(name, self._encoding)
         data = tag + b' ' + name
-        print("name din COMMAND: " + str(name))
         for arg in args:
             if arg is None: continue
             if isinstance(arg, str):
@@ -1035,7 +1033,6 @@ class IMAP4:
         # otherwise first response line received.
 
         resp = self._get_line()
-        print("resp: " + str(resp))
 
         # Command completion response?
 
@@ -1209,9 +1206,7 @@ class IMAP4:
     def _untagged_response(self, typ, dat, name):
         if typ == 'NO':
             return typ, dat
-        print("untagged responses din _untagged_response..." + str(self.untagged_responses))
         if name == 'FETCH':
-            print("Extragem mailul din untagged rr")
             search_pattern = b'Message-ID'
             search_pattern1 = b'Return-Path'
             search_pattern2 = b'7bit'
@@ -1234,6 +1229,7 @@ class IMAP4:
                                     print(str(result, 'utf-8'))
                                     print("\n")
                                     mail_found = 1
+                                    self.untagged_responses.pop(key)
                         except:
                             pass
                         try:
@@ -1249,6 +1245,7 @@ class IMAP4:
                                     print(str(result, 'utf-8'))
                                     print("\n")
                                     mail_found = 1
+                                    self.untagged_responses.pop(key)
                         except:
                             pass
                         if mail_found:
@@ -1437,4 +1434,5 @@ def Time2Internaldate(date_time):
         raise ValueError("date_time not of a known type")
     fmt = '"%d-{}-%Y %H:%M:%S %z"'.format(Months[dt.month])
     return dt.strftime(fmt)
+
 
