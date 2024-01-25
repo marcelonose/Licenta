@@ -32,7 +32,7 @@ AllowedVersions = ('IMAP4REV1', 'IMAP4')        # Most recent first
 # to accept command lines up to 8000 octets, so we used to use 10K here.
 # In the modern world (eg: gmail) the response to, for example, a
 # search command can be quite large, so we now use 1M.
-_MAXLINE = 10000#1000000
+_MAXLINE = 60060#1000000
 
 
 
@@ -269,6 +269,8 @@ class IMAP4:
         # (which is used by socket.create_connection()) expects None
         # as a default value for host.
         s = socket.socket()
+        if self.port == IMAP4_SSL_PORT:
+            self.file = s.makefile('rb')
         if timeout is not None and not timeout:
             raise ValueError('Non-blocking socket (timeout=0) is not supported')
         host = None if not self.host else self.host
@@ -290,7 +292,8 @@ class IMAP4:
         self.host = host
         self.port = port
         self.sock = self._create_socket(timeout)
-        self.file = self.sock.makefile('rb')
+        if port == IMAP4_PORT:
+            self.file = self.sock.makefile('rb')
         
     def read(self, size):
         """Read 'size' bytes from remote."""
@@ -299,7 +302,11 @@ class IMAP4:
 
     def readline(self):
         """Read line from remote."""
-        line = self.file.readline(_MAXLINE + 1)
+        if self.port == IMAP4_PORT:
+            line = self.file.readline(_MAXLINE + 1)
+        if self.port == IMAP4_SSL_PORT:
+            line = self.sock.readline()#lipsa socket.makefile() la socket wrap-uit
+
         if len(line) > _MAXLINE:
             raise self.error("got more than %d bytes" % _MAXLINE)
         return line
@@ -308,7 +315,10 @@ class IMAP4:
     def send(self, data):
         """Send data to remote."""
         #sys.audit("imaplib.send", self, data)
-        self.sock.sendall(data)
+        if self.port == IMAP4_SSL_PORT:
+            self.sock.write(data) # tls wrapped socket
+        else:
+            self.sock.sendall(data)
 
 
     def shutdown(self):
@@ -775,13 +785,13 @@ class IMAP4:
         if name not in self.capabilities:
             raise self.abort('TLS not supported by server')
         # Generate a default SSL context if none was passed.
-        if ssl_context is None:
-            ssl_context = ssl._create_stdlib_context()
+        #if ssl_context is None:
+        #    ssl_context = ssl._create_stdlib_context()
         typ, dat = self._simple_command(name)
         if typ == 'OK':
-            self.sock = ssl_context.wrap_socket(self.sock,
-                                                server_hostname=self.host)
-            self.file = self.sock.makefile('rb')
+            self.sock = ssl.wrap_socket(self.sock,
+                                        server_hostname=self.host)
+            #self.file = self.sock.makefile('rb')
             self._tls_established = True
             self._get_capabilities()
         else:
@@ -1018,6 +1028,7 @@ class IMAP4:
 
     def _get_capabilities(self):
         typ, dat = self.capability()
+        
         if dat == [None]:
             raise self.error('no CAPABILITY response from server')
         dat = str(dat[-1], self._encoding)
@@ -1315,17 +1326,27 @@ if HAVE_SSL:
 
         def __init__(self, host='', port=IMAP4_SSL_PORT, keyfile=None,
                      certfile=None, ssl_context=None, timeout=None):
-            """
-            """
+            if ssl_context is None:
+                pass
+                #ssl_context = ssl._create_stdlib_context()
+                #self.ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            IMAP4.__init__(self, host, port, timeout)
             
         def _create_socket(self, timeout):
-            """
-            """
+            sock = IMAP4._create_socket(self, timeout)
+            #self.file = sock.makefile('rb')
+            #return self.ssl_context.wrap_socket(sock, server_hostname=self.host)
+            sock_ssl = ssl.wrap_socket(sock, server_hostname=self.host)
+            return sock_ssl
             
 
         def open(self, host='', port=IMAP4_SSL_PORT, timeout=None):
+            """Setup connection to remote server on "host:port".
+                (default: localhost:standard IMAP4 SSL port).
+            This connection will be used by the routines:
+                read, readline, send, shutdown.
             """
-            """
+            IMAP4.open(self, host, port, timeout)
 
     __all__.append("IMAP4_SSL")
     
