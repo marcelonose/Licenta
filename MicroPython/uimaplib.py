@@ -32,7 +32,7 @@ AllowedVersions = ('IMAP4REV1', 'IMAP4')        # Most recent first
 # to accept command lines up to 8000 octets, so we used to use 10K here.
 # In the modern world (eg: gmail) the response to, for example, a
 # search command can be quite large, so we now use 1M.
-_MAXLINE = 60060#1000000
+_MAXLINE = 50000#1000000
 
 
 
@@ -300,12 +300,47 @@ class IMAP4:
         return self.file.read(size)
 
 
-    def readline(self):
+    def readline(self, fetch=False):
         """Read line from remote."""
         if self.port == IMAP4_PORT:
             line = self.file.readline(_MAXLINE + 1)
         if self.port == IMAP4_SSL_PORT:
-            line = self.sock.readline()#lipsa socket.makefile() la socket wrap-uit
+            if(fetch):
+                s = self.sock
+                resp = s.readline()
+    
+                pattern1 = b'Content-Transfer-Encoding'
+                pattern2 = b'OK FETCH completed'
+                
+                
+                while resp.find(pattern1) == -1:   
+                    resp = s.readline()
+                    print(resp)
+                resp = s.readline() 
+                mail = ""
+                while resp.find(pattern2) == -1:
+                    resp = s.readline()
+                    if pattern2 in resp:
+                        break
+                    mail = mail + str(resp)
+                print(mail)
+                mail = mail[2:]
+                print(mail)
+                mail=mail[:-16]
+                print(mail)
+                mail = mail.replace("b'\\r\\n'","\r\n")
+                mail = mail.replace("b'","")
+                mail = mail.replace("'","")
+                mail = mail.replace("\\r\\n","\r\n")
+                print(mail)
+                line = mail
+            else:
+                
+                line = self.sock.readline()
+            
+            
+            
+            #line= self.sock.SocketIO(sock).readline()
 
         if len(line) > _MAXLINE:
             raise self.error("got more than %d bytes" % _MAXLINE)
@@ -315,6 +350,7 @@ class IMAP4:
     def send(self, data):
         """Send data to remote."""
         #sys.audit("imaplib.send", self, data)
+        
         if self.port == IMAP4_SSL_PORT:
             self.sock.write(data) # tls wrapped socket
         else:
@@ -1014,7 +1050,10 @@ class IMAP4:
         if not logout:
             self._check_bye()
         try:
-            typ, data = self._get_tagged_response(tag, expect_bye=logout)
+            fetch = False
+            if(name == 'FETCH'):
+                fetch = True
+            typ, data = self._get_tagged_response(tag, fetch, expect_bye=logout)
         except self.abort as val:
             raise self.abort('command: %s => %s' % (name, val))
         except self.error as val:
@@ -1036,14 +1075,14 @@ class IMAP4:
         self.capabilities = tuple(dat.split())
 
 
-    def _get_response(self):
+    def _get_response(self, fetch=False):
 
         # Read response and store.
         #
         # Returns None for continuation responses,
         # otherwise first response line received.
 
-        resp = self._get_line()
+        resp = self._get_line(fetch)
 
         # Command completion response?
 
@@ -1127,7 +1166,7 @@ class IMAP4:
         return resp
 
 
-    def _get_tagged_response(self, tag, expect_bye=False):
+    def _get_tagged_response(self, tag, fetch=False, expect_bye=False):
 
         while 1:
             result = self.tagged_commands[tag]
@@ -1154,7 +1193,7 @@ class IMAP4:
             # I'll update the code in `_get_response()'.
 
             try:
-                self._get_response()
+                self._get_response(fetch)
             except self.abort as val:
                 if __debug__:
                     if self.debug >= 1:
@@ -1162,9 +1201,9 @@ class IMAP4:
                 raise
 
 
-    def _get_line(self):
+    def _get_line(self, fetch=False):
 
-        line = self.readline()
+        line = self.readline(fetch)
         if not line:
             raise self.abort('socket error: EOF')
 
