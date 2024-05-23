@@ -1,10 +1,15 @@
 import socket
 
-DEFAULT_TIMEOUT = 10 # sec
+DEFAULT_TIMEOUT = 10 #sec
 CRLF = '\r\n'
 class IMAP:
+    def _new_tag(self):
+        tag = f'A{self.tag_num}'
+        self.tag_num += 1
+        return tag
+    
     def __init__(self, host, port, ssl=False):
-        tag = b'a001'
+        self.tag_num = 1
         addr = socket.getaddrinfo(host, port)[0][-1]
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(DEFAULT_TIMEOUT)
@@ -21,7 +26,7 @@ class IMAP:
             
     def login(self, username, password):
         self.username = username
-        self.tag = 'a001' #self.tag ...
+        self.tag = self._new_tag()
         cmd = self.tag + ' LOGIN ' + self.username + ' ' + password + CRLF
         self._sock.write(cmd)
         response = self._sock.read(13).decode().split()[-1]
@@ -37,7 +42,7 @@ class IMAP:
         
     def list(self):
         self.mailboxes=[]
-        self.tag = 'a002' #...
+        self.tag = self._new_tag()
         cmd = self.tag + ' LIST ' + '\"\" \"*\"' + CRLF
         self._sock.write(cmd)
         response = self._sock.readline().decode()
@@ -58,13 +63,15 @@ class IMAP:
         self.mailbox=mailbox
         if self.mailbox not in self.mailboxes:
             raise Exception("Mailboxul nu exista")
-        self.tag= 'a003' #...
+        self.tag= self._new_tag()
         cmd = self.tag + ' SELECT ' + mailbox + CRLF
         self._sock.write(cmd)
         response = self._sock.readline().decode()
         while "EXISTS" not in response:
             response = self._sock.readline().decode()
-        no_mails = response[2]
+        print(response)
+        no_mails = response[2:].split(" ")
+        no_mails=int(no_mails[0])
         response = self._sock.readline().decode()
         while mailbox + " selected. (Success)" not in response:
             response = self._sock.readline().decode()
@@ -73,12 +80,15 @@ class IMAP:
         return no_mails
     
     def fetch(self, index):
-        self.tag = 'a004' #...
+        self.tag = self._new_tag()
         cmd = self.tag + ' FETCH ' + str(index) + ' ' + "BODY[]" + CRLF
         self._sock.write(cmd)
-         #for i in range (32):
-         #   if self._sock.readline() is type(None):
+        #for i in range (32):
+            #   if self._sock.readline() is type(None):
+            #response = self._sock.readline()
+            #print(response)
          #      print("s")
+        print("Fetch din mesajul " + str(index))
         while True:
             response = self._sock.readline().decode()
             #print(response)
