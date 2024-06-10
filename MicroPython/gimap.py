@@ -97,29 +97,27 @@ class IMAP:
             if "Date:" in response:
                 data = response[6:]
             if "From:" in response:
-                exp = response[6:]
+                exp = response[5:]
             if "Subject:" in response:
-                subiect = response[9:]
-            if "Content-Type" in response:
+                subiect = response[8:]
+            #if "Content-Type" in response:
                 mesaj = ""
                 response = self._sock.readline().decode()
+                mesaj = mesaj + response
                 while True:
                     response = self._sock.readline().decode()
                     #print(response)
                     if ")\r\n" in response:
+                        print("Mesaj finalizat")
                         break
                     mesaj = mesaj + response
-            if self.tag in response:
+            if self.tag in response[0:4]:
+                print("Fetch done")
                 break
-                              
+        #print("________________________________________")
+        #print(exp)
+        #print(subiect)
+        #print(data)
+        #print(mesaj)                   
         return exp, subiect, data, mesaj
-            
-def Int2AP(num):
-    #Generare de tag
-    val = b''; AP = b'ABCDEFGHIJKLMNOP'
-    num = int(abs(num))
-    while num:
-        num, mod = divmod(num, 16)
-        val = AP[mod:mod+1] + val
-    return val
         
