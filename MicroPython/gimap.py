@@ -98,6 +98,9 @@ class IMAP:
                 data = response[6:]
             if "From:" in response:
                 exp = response[5:]
+                pos = exp.find('<')
+                if pos != -1:
+                    exp = exp[:pos] + ' ' + exp[pos:]
             if "Subject:" in response:
                 subiect = response[8:]
             #if "Content-Type" in response:
@@ -120,4 +123,18 @@ class IMAP:
         #print(data)
         #print(mesaj)                   
         return exp, subiect, data, mesaj
-        
+    def search(self, flag):
+        self.tag = self._new_tag()
+        cmd = self.tag + ' SEARCH ' + flag + CRLF
+        print(cmd)
+        self._sock.write(cmd)
+        response = self._sock.readline().decode()
+        response = response.split()[2:]
+        indecsi = [int(num) for num in response]
+        return indecsi
+    
+    def logout(self):
+        self.tag = self._new_tag()
+        cmd = self.tag + ' LOGOUT' + CRLF
+        self._sock.write(cmd)
+        self._sock.close()
